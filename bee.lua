@@ -4,7 +4,7 @@ _G.package.loaded.config = nil
 
 local strategy, mutations, device
 
-local function initialize()
+local function checkHardware()
     if not component.inventory_controller then
         error("缺少物品栏交互升级")
     elseif not component.robot then
@@ -41,7 +41,7 @@ local function main()
     end
 end
 
-local suc, err = pcall(initialize)
+local suc, err = pcall(checkHardware)
 if suc then
     suc, err = pcall(main)
     if not suc then
