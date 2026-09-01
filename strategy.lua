@@ -1001,90 +1001,62 @@ function M.optimizeSpecies(species)--优化现有品种
     return droneSlot, princessSlot
 end
 
-function M.task(species)--制定突变链
-    --检查目标是否已存在
-    if beeData.initialized and beeData.getDroneTag(species) then
-        print("目标品种已存在，正在优化基因...")
-        local droneSlot, princessSlot = M.optimizeSpecies(species)
-        robot.select(droneSlot)
-        upgrade_me.sendItems()
-        robot.select(princessSlot)
-        upgrade_me.sendItems()
-        print("优化完成！")
-        device.destruct()
-        return
-    end
-    --计算突变路径
-    print("计算突变路径")
-    do
-        local targetTag = beeData.getDroneTag(species)
-        if targetTag then
-            local targetSlot = bot.checkItem({name="Forestry:beeDroneGE",tag=targetTag}, 1)
-            if targetSlot then
-                local previousLabel = bot.inventoryLabel
-                bot.inventoryLabel = "newSpecies:"..species
-                local optimizedDroneSlot, optimizedPrincessSlot = M.purify(nil, targetSlot, nil, nil, ":newSpecies")
-                bot.inventoryLabel = previousLabel
-                if optimizedDroneSlot and optimizedPrincessSlot then
-                    return optimizedDroneSlot, optimizedPrincessSlot
-                else
-                    error(string.format("优化%s蜂过程中发生基因丢失", species))
-                end
-            end
+--判断目标品种是否已存在（已初始化且网络中已有该品种雄蜂）
+function M.isSpeciesExisting(species)
+    return beeData.getDroneTag(species) ~= nil
+end
+
+--优化已存在的品种：执行基因优化、存入网络并结束
+function M.optimizeExistingSpecies(species)
+    print("目标品种已存在，正在优化基因...")
+    local droneSlot, princessSlot = M.optimizeSpecies(species)
+    robot.select(droneSlot)
+    upgrade_me.sendItems()
+    robot.select(princessSlot)
+    upgrade_me.sendItems()
+    print("优化完成！")
+    device.destruct()
+end
+
+--递归回溯父代，将需要培育的品种及其突变配方填入mutationChain，无法获得的品种填入lackSpecies
+function M.calculateMutationChain(species, mutationChain, lackSpecies)
+    local visited = {}
+    local function addMutation(target)
+        if visited[target] then
+            return
         end
-    end
-    local mutationChain, lackSpecies = {}, {}
-    if not beeData.initialized then
-        if not beeData.getDroneTag("forestry.speciesWintry") then
-            table.insert(lackSpecies, "forestry.speciesWintry")
+        visited[target] = true
+        if beeData.getDroneTag(target) then
+            return
         end
-        if not beeData.getDroneTag("extrabees.species.rock") then
-            table.insert(lackSpecies, "extrabees.species.rock")
+        if not beeData.initialized and (target == "forestry.speciesCultivated" or target == "forestry.speciesCommon") then
+            return
         end
-    end
-    do
-        local visited = {}
-        local function addMutation(species)
-            if visited[species] then
-                return
-            end
-            visited[species] = true
-            if beeData.getDroneTag(species) then
-                return
-            end
-            if not beeData.initialized and (species == "forestry.speciesCultivated" or species == "forestry.speciesCommon") then
-                return
-            end
-            --[[component.database.set(1, "Forestry:beeDroneGE", 0, '{IsAnalyzed:1b,Genome:{Chromosomes:[0:{Slot:0b,UID0:"'..species..'",UID1:"'..species..'"}]}}')
-            if bot.checkItem({label=component.database.get(1).label}) then
-                return
-            end]]--无需检查公主蜂
-            if mutations[species] then
-                local parents
-                if mutations[species][1] then
-                    parents = mutations[species][1].parents
-                else
-                    parents = mutations[species].parents
-                end
-                addMutation(parents[1])
-                addMutation(parents[2])
-                table.insert(mutationChain, {species, mutations[species][1] or mutations[species]})
+        --[[component.database.set(1, "Forestry:beeDroneGE", 0, '{IsAnalyzed:1b,Genome:{Chromosomes:[0:{Slot:0b,UID0:"'..target..'",UID1:"'..target..'"}]}}')
+        if bot.checkItem({label=component.database.get(1).label}) then
+            return
+        end]]--无需检查公主蜂
+        if mutations[target] then
+            local parents
+            if mutations[target][1] then
+                parents = mutations[target][1].parents
             else
-                table.insert(lackSpecies, species)
-                return
+                parents = mutations[target].parents
             end
+            addMutation(parents[1])
+            addMutation(parents[2])
+            table.insert(mutationChain, {target, mutations[target][1] or mutations[target]})
+        else
+            table.insert(lackSpecies, target)
+            return
         end
-        addMutation(species)
     end
-    if lackSpecies[1] then
-        print("无法完成此突变任务，缺乏以下品种：")
-        for _, species in ipairs(lackSpecies) do
-            print("  - " .. species)
-        end
-        return
-    end
-    --校验突变条件
-    print("校验突变条件")
+    addMutation(species)
+end
+
+--校验突变链上每步突变的条件（基石/环境/维度/日期/月相/时间/诱变机）
+--返回各类不满足或需人工干预的条件表
+function M.checkMutationChain(mutationChain)
     local lackFoundation, lackEnvironmentConditions, requiredDimension, requiredMutatron = {}, {}, {}, {}
     local requiredDate, requiredLunarPhase, requiredTime = {}, {}, {}
     for i = 1, #mutationChain do
@@ -1116,6 +1088,30 @@ function M.task(species)--制定突变链
             requiredMutatron[i] = true
         end
     end
+    return lackFoundation, lackEnvironmentConditions, requiredDimension, requiredMutatron, requiredDate, requiredLunarPhase, requiredTime
+end
+
+function M.newBreedingTask(species)--新培育任务：优化已存在品种或培育新品种
+    --1.先检查品种是否存在：若已存在则直接优化并结束
+    if M.isSpeciesExisting(species) then
+        M.optimizeExistingSpecies(species)
+        return
+    end
+    --2.计算需要培育的品种和缺失的前置品种
+    local mutationChain, lackSpecies = {}, {}
+    M.calculateMutationChain(species, mutationChain, lackSpecies)
+    --3.列出缺乏品种并终止
+    if lackSpecies[1] then
+        print("无法完成此突变任务，缺乏以下品种：")
+        for _, species in ipairs(lackSpecies) do
+            print("  - " .. species)
+        end
+        return
+    end
+    --4.校验每步突变条件（基石/环境/维度/日期/月相/时间/诱变机）
+    print("校验突变条件")
+    local lackFoundation, lackEnvironmentConditions, requiredDimension, requiredMutatron, requiredDate, requiredLunarPhase, requiredTime = M.checkMutationChain(mutationChain)
+    --5.环境条件或诱变机不满足：列出并终止
     if next(lackEnvironmentConditions) or next(requiredMutatron) then
         if next(lackEnvironmentConditions) then
             print("无法完成此突变任务，以下突变不满足环境条件：")
@@ -1149,6 +1145,7 @@ function M.task(species)--制定突变链
         end
         return
     end
+    --6.处理缺失基石：提示补齐后重新检查
     while next(lackFoundation) do
         print("以下突变缺少基石：")
         for i, foundationName in pairs(lackFoundation) do
@@ -1168,6 +1165,7 @@ function M.task(species)--制定突变链
             end
         end
     end
+    --7.确认人工干预条件（维度/日期/月相/时间）
     local function confirmContinue()
         io.write("是否继续执行突变？[Y/n]：")
         local answer = io.read()
@@ -1196,10 +1194,7 @@ function M.task(species)--制定突变链
     if confirm(requiredLunarPhase, "以下突变需要在对应月相进行：", "  - %s蜂突变需要月相在%s到%s之间", "  - %s蜂突变需要月相为%s") then return end
     if confirm(requiredTime, "以下突变需要在对应时间进行：", nil, "  - %s蜂突变仅在%s时发生") then return end
     print("突变条件核验完毕，开始执行突变")
-    --执行
-    if not beeData.initialized then
-        M.initialize()
-    end
+    --8.执行：按突变链逐个培育新品种，将雄蜂/公主蜂存入ME网络，每步后充电
     for i = 1, #mutationChain do
         print(string.format("正在培育%s蜂", mutationChain[i][2].name))
         local droneSlot, princessSlot = M.newSpecies(mutationChain[i][1], mutationChain[i][2])
@@ -1214,6 +1209,16 @@ function M.task(species)--制定突变链
 end
 
 function M.initialize()--初始化至田野蜂以制造样板蜂
+    if beeData.initialized then--已初始化则无需重复执行
+        return
+    end
+    --检查初始化所需的基础品种是否齐备（凛冬蜂、岩石蜂）
+    if not beeData.getDroneTag("forestry.speciesWintry") then
+        error("初始化失败：缺乏基础品种凛冬蜂（forestry.speciesWintry）")
+    end
+    if not beeData.getDroneTag("extrabees.species.rock") then
+        error("初始化失败：缺乏基础品种岩石蜂（extrabees.species.rock）")
+    end
     local function hasTargetGenes(genes, targetGenes)
         for chromosome, gene in pairs(targetGenes) do
             if genes[chromosome][1] ~= gene and genes[chromosome][2] ~= gene then
@@ -1249,13 +1254,10 @@ function M.initialize()--初始化至田野蜂以制造样板蜂
     end
     bot.inventoryLabel = previousLabel
     bot.inventory[princess1Slot].inventoryLabel = previousLabel
+    --开头已检查凛冬蜂存在，此处直接获取其tag
     local wintryDroneSlot = doUntil(function()
-        return bot.checkItem({name="Forestry:beeDroneGE",tag=
-            doUntil(function()
-                return beeData.getDroneTag("forestry.speciesWintry")
-            end, "缺少凛冬雄蜂")
-        }, 16)
-    end, "缺少凛冬雄蜂")
+        return bot.checkItem({name="Forestry:beeDroneGE",tag=beeData.getDroneTag("forestry.speciesWintry")}, 16)
+    end)
     print("正在提纯温度适应性全5、湿度适应性全5基因")
     drone1Slot, princess1Slot = M.purify(princess1Slot, wintryDroneSlot, templateGenes[1], wintryDroneSlot, ":initializing1")
     if not drone1Slot then
@@ -1266,13 +1268,10 @@ function M.initialize()--初始化至田野蜂以制造样板蜂
         upgrade_me.sendItems()
     end
     --夜行、穴居、耐雨、石头采蜜的石头蜂
+    --开头已检查岩石蜂存在，此处直接获取其tag
     local drone2Slot = doUntil(function()
-        return bot.checkItem({name="Forestry:beeDroneGE",tag=
-            doUntil(function()
-                return beeData.getDroneTag("extrabees.species.rock")
-            end, "缺少石头雄蜂")
-        }, 1)
-    end, "缺少石头雄蜂")
+        return bot.checkItem({name="Forestry:beeDroneGE",tag=beeData.getDroneTag("extrabees.species.rock")}, 1)
+    end)
     print("正在向石头蜂引入生育4x、温度适应性全5、湿度适应性全5基因")
     drone2Slot, princess1Slot = M.purify(princess1Slot, drone2Slot, templateGenes[2], drone1Slot, ":initializing2")
     if not drone2Slot then

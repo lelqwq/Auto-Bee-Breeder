@@ -31,10 +31,11 @@ local function initialize()
 end
 
 local function main()
+    strategy.initialize()
     print("请输入需要培育的蜜蜂:")
     local species = io.read()
     if mutations[species] then
-        strategy.task(species)
+        strategy.newBreedingTask(species)
     else
         error("未发现突变路径")
     end
