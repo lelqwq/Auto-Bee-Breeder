@@ -111,6 +111,66 @@ function M.updateAssistantDrone(slot, force)
     return false
 end
 
+--检查雄蜂基因是否所有染色体纯合
+local function isPureGenes(genes)
+    for _, chromosome in pairs(chromosomeList) do
+        if genes[chromosome][1] ~= genes[chromosome][2] then
+            return false
+        end
+    end
+    return true
+end
+
+--扫描ME网络与物品栏，寻找速度高于当前记录的纯合雄蜂并更新样板雄蜂（更新更好的性状）
+--返回是否更新成功，以及被替换的旧辅助公主蜂标签
+function M.updateBetterTraits()
+    if not M.initialized then
+        return false
+    end
+    --以现有样板雄蜂为参照，确保新样板雄蜂不污染其余模板基因
+    local templateGenes = data.assistantDroneTag and analyzeGenes({name="Forestry:beeDroneGE", tag=data.assistantDroneTag, individual={}})
+    local function isCompatible(genes)
+        if not templateGenes then
+            return true
+        end
+        for _, chromosome in pairs({"lifespan", "flowering", "flowerProvider", "fertility", "territory", "temperatureTolerance", "humidityTolerance", "nocturnal", "tolerantFlyer", "caveDwelling"}) do
+            if genes[chromosome][1] ~= templateGenes[chromosome][1] then
+                return false
+            end
+        end
+        return true
+    end
+    local bestTag, bestSpeed
+    --扫描ME网络
+    local stackList = upgrade_me.getItemsInNetwork({name = "Forestry:beeDroneGE"})
+    if not stackList then
+        error("超出ME网络范围")
+    end
+    for _, stack in pairs(stackList) do
+        if stack.name == "Forestry:beeDroneGE" and stack.size > 0 then
+            local ok, genes = pcall(analyzeGenes, stack)
+            if ok and isPureGenes(genes) and isCompatible(genes) and (not bestSpeed or genes.speed[1] > bestSpeed) then
+                bestTag, bestSpeed = stack.tag, genes.speed[1]
+            end
+        end
+    end
+    --扫描物品栏
+    for slot, stack in pairs(bot.inventory) do
+        if slot ~= 0 and stack and stack.type == "beeDrone" and isPureGenes(stack) and isCompatible(stack) and (not bestSpeed or stack.speed[1] > bestSpeed) then
+            bestTag, bestSpeed = stack.tag, stack.speed[1]
+        end
+    end
+    if bestTag and (not data.speedLevel or bestSpeed > data.speedLevel) then
+        data.speedLevel = bestSpeed
+        data.assistantDroneTag = bestTag
+        local oldAssistantPrincessTag = data.assistantPrincessTag
+        data.assistantPrincessTag = nil
+        saveData()
+        return true, oldAssistantPrincessTag
+    end
+    return false
+end
+
 function M.updateAssistantPrincess(slot, exchangeTag)
     if not bot.inventory[slot] or bot.inventory[slot].name ~= "Forestry:beePrincessGE" then
         error("错误的调用beeData.updateAssistantPrincess()，物品栏第"..slot.."格不是公主蜂")

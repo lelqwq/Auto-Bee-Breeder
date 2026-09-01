@@ -792,6 +792,10 @@ function M.getAssistantDrones()--获取样板雄蜂
 end
 
 function M.newSpecies(species, mutation)--突变新品种并优化基因
+    --扫描更快速度的纯种雄蜂，若发现则更新样板雄蜂，使后续培育采用更快速度
+    if beeData.updateBetterTraits() then
+        print("发现速度更快的纯种雄蜂，已更新样板雄蜂（原辅助公主蜂配对已失效）")
+    end
     --校验输入
     local allele1Tag, allele2Tag = beeData.getDroneTag(mutation.parents[1]), beeData.getDroneTag(mutation.parents[2])
     if not allele1Tag or not allele2Tag then
