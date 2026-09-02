@@ -12,6 +12,19 @@ local database = component.database
 local upgrade_me = component.upgrade_me--[[@as table]]
 
 local chromosomeList = {"species", "speed", "lifespan", "fertility", "flowering", "flowerProvider", "territory", "effect", "temperatureTolerance", "humidityTolerance", "nocturnal", "tolerantFlyer", "caveDwelling"}
+--全局固定模板基因：样板雄蜂与目标基因的非species/effect/speed部分须命中这些极值
+local templateFixedGenes = {
+    lifespan = 1,
+    flowering = 1,
+    flowerProvider = "extrabees.flower.rock",
+    fertility = 4,
+    territory = 1,
+    temperatureTolerance = "BOTH_5",
+    humidityTolerance = "BOTH_5",
+    nocturnal = true,
+    tolerantFlyer = true,
+    caveDwelling = true,
+}
 
 local data
 local function saveData()
@@ -57,21 +70,11 @@ end
 function M.getTargetGenes(species)
     if M.initialized then
         local effect, speed = M.getSpeedAndEffect(species)
-        return {
-            species = species,
-            speed = speed,
-            effect = effect,
-            lifespan = 1,
-            flowering = 1,
-            flowerProvider = "extrabees.flower.rock",
-            fertility = 4,
-            territory = 1,
-            temperatureTolerance = "BOTH_5",
-            humidityTolerance = "BOTH_5",
-            nocturnal = true,
-            tolerantFlyer = true,
-            caveDwelling = true
-        }
+        local genes = { species = species, speed = speed, effect = effect }
+        for chromosome, gene in pairs(templateFixedGenes) do
+            genes[chromosome] = gene
+        end
+        return genes
     else
         if species == "forestry.speciesWintry" then
             return {species = "forestry.speciesWintry",speed = 2,lifespan = 3,fertility = 4,flowering = 1,flowerProvider = "extrabees.flower.rock",territory = 1,effect = "forestry.effectGlacial",temperatureTolerance = "BOTH_5",humidityTolerance = "BOTH_5",nocturnal = true,tolerantFlyer = true,caveDwelling = true}
@@ -121,25 +124,18 @@ local function isPureGenes(genes)
     return true
 end
 
---扫描ME网络与物品栏，寻找速度高于当前记录的纯合雄蜂并更新样板雄蜂（更新更好的性状）
---返回是否更新成功，以及被替换的旧辅助公主蜂标签
-function M.updateBetterTraits()
-    if not M.initialized then
-        return false
-    end
-    --以现有样板雄蜂为参照，确保新样板雄蜂不污染其余模板基因
-    local templateGenes = data.assistantDroneTag and analyzeGenes({name="Forestry:beeDroneGE", tag=data.assistantDroneTag, individual={}})
-    local function isCompatible(genes)
-        if not templateGenes then
-            return true
+--检查雄蜂基因的固定部分（非species/effect/speed）是否命中全局模板极值
+local function matchesTemplate(genes)
+    for chromosome, gene in pairs(templateFixedGenes) do
+        if genes[chromosome][1] ~= gene then
+            return false
         end
-        for _, chromosome in pairs({"lifespan", "flowering", "flowerProvider", "fertility", "territory", "temperatureTolerance", "humidityTolerance", "nocturnal", "tolerantFlyer", "caveDwelling"}) do
-            if genes[chromosome][1] ~= templateGenes[chromosome][1] then
-                return false
-            end
-        end
-        return true
     end
+    return true
+end
+
+--扫描ME网络与物品栏中"纯合且固定基因命中模板"的雄蜂，返回速度最高一只的tag与speed
+local function scanTemplateDrone()
     local bestTag, bestSpeed
     --扫描ME网络
     local stackList = upgrade_me.getItemsInNetwork({name = "Forestry:beeDroneGE"})
@@ -149,17 +145,27 @@ function M.updateBetterTraits()
     for _, stack in pairs(stackList) do
         if stack.name == "Forestry:beeDroneGE" and stack.size > 0 then
             local ok, genes = pcall(analyzeGenes, stack)
-            if ok and isPureGenes(genes) and isCompatible(genes) and (not bestSpeed or genes.speed[1] > bestSpeed) then
+            if ok and isPureGenes(genes) and matchesTemplate(genes) and (not bestSpeed or genes.speed[1] > bestSpeed) then
                 bestTag, bestSpeed = stack.tag, genes.speed[1]
             end
         end
     end
     --扫描物品栏
     for slot, stack in pairs(bot.inventory) do
-        if slot ~= 0 and stack and stack.type == "beeDrone" and isPureGenes(stack) and isCompatible(stack) and (not bestSpeed or stack.speed[1] > bestSpeed) then
+        if slot ~= 0 and stack and stack.type == "beeDrone" and isPureGenes(stack) and matchesTemplate(stack) and (not bestSpeed or stack.speed[1] > bestSpeed) then
             bestTag, bestSpeed = stack.tag, stack.speed[1]
         end
     end
+    return bestTag, bestSpeed
+end
+
+--扫描并采纳更好的性状：若找到速度高于当前记录的纯合模板雄蜂，则更新样板雄蜂
+--返回是否更新成功，以及被替换的旧辅助公主蜂标签
+function M.updateBetterTraits()
+    if not M.initialized then
+        return false
+    end
+    local bestTag, bestSpeed = scanTemplateDrone()
     if bestTag and (not data.speedLevel or bestSpeed > data.speedLevel) then
         data.speedLevel = bestSpeed
         data.assistantDroneTag = bestTag
@@ -169,6 +175,23 @@ function M.updateBetterTraits()
         return true, oldAssistantPrincessTag
     end
     return false
+end
+
+--确保存在一只"记录有效且实际可用"的样板雄蜂：
+--1.先在记录data.assistantDroneTag中查；能找到则返回
+--2.找不到则轮询ME网络与物品栏，找到纯合且固定基因命中模板的雄蜂并更新记录
+--完全没有样板雄蜂则返回nil
+function M.findTemplateDrone()
+    if data.assistantDroneTag and bot.checkItem({name = "Forestry:beeDroneGE", tag = data.assistantDroneTag}) then
+        return data.assistantDroneTag
+    end
+    local bestTag = scanTemplateDrone()
+    if bestTag then
+        data.assistantDroneTag = bestTag
+        data.assistantPrincessTag = nil--样板雄蜂更换，旧公主蜂配对作废，交由getAssistantDrones重新克隆配对
+        saveData()
+    end
+    return bestTag
 end
 
 function M.updateAssistantPrincess(slot, exchangeTag)

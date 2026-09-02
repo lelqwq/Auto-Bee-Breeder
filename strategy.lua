@@ -1209,8 +1209,12 @@ function M.newBreedingTask(species)--新培育任务：优化已存在品种或�
 end
 
 function M.initialize()--初始化至田野蜂以制造样板蜂
-    if beeData.initialized then--已初始化则无需重复执行
-        return
+    if beeData.initialized then--已初始化：验证样板雄蜂池是否真实可用（而非仅状态标志）
+        if beeData.findTemplateDrone() then
+            M.getAssistantDrones()--补足样板雄蜂数量至20以上（不足则繁殖到48）
+            return
+        end
+        --一只样板雄蜂都不剩：掉头继续下方完整重建
     end
     --检查初始化所需的基础品种是否齐备（凛冬蜂、岩石蜂）
     if not beeData.getDroneTag("forestry.speciesWintry") then
