@@ -2,7 +2,7 @@ local shell = require("shell")
 local filesystem = require("filesystem")
 local internet = require("internet")
 
-local repo = "https://raw.githubusercontent.com/hxync/BeeMasterXXL/"
+local repo = "https://raw.githubusercontent.com/lelqwq/Auto-Bee-Breeder/"
 local branch = "main"
 local paths = { "lib" }
 
