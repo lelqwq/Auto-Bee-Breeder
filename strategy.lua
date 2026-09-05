@@ -762,18 +762,25 @@ function M.getAssistantDrones()--获取样板雄蜂
                 error("获取辅助公主蜂失败：未找到现存的辅助公主蜂")
             end
         else
-            princess = beeData.getPrincessTag(true)
-            princess = bot.checkItem({name="Forestry:beePrincessGE",tag=princess}, 1)
+            --优先复用现存"与样板雄蜂同基因"的纯合公主，避免data丢失后依赖始祖公主重新克隆
+            local princessTag = beeData.findAssistantPrincessTag(bot.inventory[droneSlot])
+            if princessTag then
+                princess = bot.checkItem({name="Forestry:beePrincessGE",tag=princessTag}, 1)
+            end
             if not princess then
-                error("培育样板雄蜂失败：未找到可用的初始公主蜂")
-            end
-            local targetGenes = {}
-            for _, chromosome in pairs(chromosomeList) do
-                targetGenes[chromosome] = bot.inventory[droneSlot][chromosome][1]
-            end
-            droneSlot, princess = M.purify(princess, droneSlot, targetGenes, droneSlot, ":assistant")
-            if not droneSlot then
-                error("培育样板雄蜂过程中发生基因丢失")
+                princess = beeData.getPrincessTag(true)
+                princess = bot.checkItem({name="Forestry:beePrincessGE",tag=princess}, 1)
+                if not princess then
+                    error("培育样板雄蜂失败：未找到可用的初始公主蜂")
+                end
+                local targetGenes = {}
+                for _, chromosome in pairs(chromosomeList) do
+                    targetGenes[chromosome] = bot.inventory[droneSlot][chromosome][1]
+                end
+                droneSlot, princess = M.purify(princess, droneSlot, targetGenes, droneSlot, ":assistant")
+                if not droneSlot then
+                    error("培育样板雄蜂过程中发生基因丢失")
+                end
             end
         end
         princess, droneSlot = M.breedDrones(princess, droneSlot, 48-droneCount)
@@ -1208,120 +1215,257 @@ function M.newBreedingTask(species)--新培育任务：优化已存在品种或�
     device.destruct()
 end
 
-function M.initialize()--初始化至田野蜂以制造样板蜂
-    if beeData.initialized then--已初始化：验证样板雄蜂池是否真实可用（而非仅状态标志）
+function M.initialize()--初始化至样板雄蜂体系（支持分阶段断点续跑）
+    --已初始化：只需确认样板雄蜂池真实可用并补足；耗尽则轻量兜底，而非重跑人工公主仪式
+    if beeData.initialized then
         if beeData.findTemplateDrone() then
             M.getAssistantDrones()--补足样板雄蜂数量至20以上（不足则繁殖到48）
             return
         end
-        --一只样板雄蜂都不剩：掉头继续下方完整重建
+        error("样板雄蜂池已物理耗尽，且ME网络与物品栏中不存在携带完整模板基因的纯合雄蜂。模板基因无法由非模板雄蜂重新培育，请放回至少一只纯模板雄蜂后重试。")
     end
-    --检查初始化所需的基础品种是否齐备（凛冬蜂、岩石蜂）
+    --未初始化：先验物理池。
+    --·有记录且可获取（含岩石样板的仪式断点，或记录仍在）→ 交给下方分阶段流程续跑，绝不置位初始化；
+    --·无记录却扫到"最终形态样板"（换机/data丢失，网络残留完成品）→ 采纳收尾。findTemplateDrone 会同步恢复速度基线。
+    local hadRecord = beeData.getAssistantDroneTag() ~= nil
+    if beeData.findTemplateDrone() then
+        if hadRecord then
+            --仪式断点（岩石样板在册）：续跑由分阶段流程处理
+        else
+            beeData.completeInitialization()--物理池已具备最终形态样板即视为初始化达成
+            M.getAssistantDrones()--重建配对并补足
+            return
+        end
+    end
+    --1.检查初始化所需的基础品种是否齐备（凛冬蜂、岩石蜂）
     if not beeData.getDroneTag("forestry.speciesWintry") then
         error("初始化失败：缺乏基础品种凛冬蜂（forestry.speciesWintry）")
     end
     if not beeData.getDroneTag("extrabees.species.rock") then
         error("初始化失败：缺乏基础品种岩石蜂（extrabees.species.rock）")
     end
-    local function hasTargetGenes(genes, targetGenes)
-        for chromosome, gene in pairs(targetGenes) do
-            if genes[chromosome][1] ~= gene and genes[chromosome][2] ~= gene then
-                return false
-            end
-        end
-        return true
-    end
     local templateGenes = {
         [1] = {species = "forestry.speciesWintry",speed = 2,lifespan = 3,fertility = 4,flowering = 1,flowerProvider = "forestry.flowersSnow",territory = 1,effect = "forestry.effectGlacial",temperatureTolerance = "BOTH_5",humidityTolerance = "BOTH_5",nocturnal = false,tolerantFlyer = false,caveDwelling = false},
         [2] = {species = "extrabees.species.rock",speed = 2,lifespan = 3,fertility = 4,flowering = 1,flowerProvider = "extrabees.flower.rock",territory = 1,effect = "forestry.effectNone",temperatureTolerance = "BOTH_5",humidityTolerance = "BOTH_5",nocturnal = true,tolerantFlyer = true,caveDwelling = true},
         [3] = {species = "forestry.speciesWintry",speed = 2,lifespan = 3,fertility = 4,flowering = 1,flowerProvider = "extrabees.flower.rock",territory = 1,effect = "forestry.effectGlacial",temperatureTolerance = "BOTH_5",humidityTolerance = "BOTH_5",nocturnal = true,tolerantFlyer = true,caveDwelling = true}
     }
-    --温度适应性5与湿度适应性5的凛冬公主蜂
-    print("请提供一只使用适应性调整器将温度适应性、湿度适应性均调整到全5的始祖种凛冬公主蜂")
-    local princess1Slot, drone1Slot
+    local function hasGene(stack, chromosome, gene)
+        return stack[chromosome][1] == gene or stack[chromosome][2] == gene
+    end
+    --判"纯合且逐染色体命中模板"
+    local function matchesTemplate(stack, template)
+        for _, chromosome in pairs(chromosomeList) do
+            if stack[chromosome][1] ~= template[chromosome] or stack[chromosome][2] ~= template[chromosome] then
+                return false
+            end
+        end
+        return true
+    end
+    --按"纯合命中模板"在物品栏/ME网络查找现成蜜蜂tag（优先物品栏）
+    local function findTemplateTag(name, template)
+        for slot, stack in pairs(bot.inventory) do
+            if slot ~= 0 and stack and stack.name == name and matchesTemplate(stack, template) then
+                return stack.tag
+            end
+        end
+        local stackList = upgrade_me.getItemsInNetwork({name = name})
+        if not stackList then
+            error("超出ME网络范围")
+        end
+        for _, stack in pairs(stackList) do
+            if stack.name == name then
+                local ok, genes = pcall(require("analyzeGenes"), stack)
+                if ok and matchesTemplate(genes, template) then
+                    return stack.tag
+                end
+            end
+        end
+        return nil
+    end
+    --按tag取回指定数量，返回槽位（取不到则nil）
+    local function fetchTemplateSlot(name, template, count)
+        local tag = findTemplateTag(name, template)
+        if tag then
+            return bot.checkItem({name = name, tag = tag}, count or 1)
+        end
+    end
+    --宽松定位"凛冬且温湿全5"的公主作为基因种子（natural与否皆可续用，避免断点后重复索要始祖公主）
+    local function findWintryTolerantTag()
+        for slot, stack in pairs(bot.inventory) do
+            if slot ~= 0 and stack and stack.type == "beePrincess" and hasGene(stack, "species", "forestry.speciesWintry") and hasGene(stack, "temperatureTolerance", "BOTH_5") and hasGene(stack, "humidityTolerance", "BOTH_5") then
+                return stack.tag
+            end
+        end
+        local stackList = upgrade_me.getItemsInNetwork({name = "Forestry:beePrincessGE"})
+        if not stackList then
+            error("超出ME网络范围")
+        end
+        for _, stack in pairs(stackList) do
+            if stack.name == "Forestry:beePrincessGE" then
+                local ok, genes = pcall(require("analyzeGenes"), stack)
+                if ok and hasGene(genes, "species", "forestry.speciesWintry") and hasGene(genes, "temperatureTolerance", "BOTH_5") and hasGene(genes, "humidityTolerance", "BOTH_5") then
+                    return stack.tag
+                end
+            end
+        end
+        return nil
+    end
+
     local previousLabel = bot.inventoryLabel
-    bot.inventoryLabel = "initialize:getingTorlance5Princess"
-    while true do
-        os.sleep(1)
-        for _,slot in pairs(bot.getItemsWithLabel(bot.inventoryLabel)) do
-            if bot.inventory[slot].type == "beePrincess" and bot.inventory[slot].isNatural == true and hasTargetGenes(bot.inventory[slot], {species = "forestry.speciesWintry", temperatureTolerance = "BOTH_5", humidityTolerance = "BOTH_5"}) then
-                princess1Slot = slot
-                break
-            else
-                robot.select(slot)
+    --初始化仪式阶段（beeData.initPhase）：0=未开始 1=模板1(凛冬)完成 2=模板2(岩石)完成 3=岩石样板已注册
+    local phase = beeData.getInitPhase()
+    --迁移兼容：旧版注册岩石样板时不写initPhase；"已注册(assistantDroneTag在册)且未初始化"一律视为阶段3
+    if phase == 0 and beeData.getAssistantDroneTag() then
+        phase = 3
+        beeData.setInitPhase(3)
+    end
+    --续跑前校验：上一阶段产物必须真实可获取。模板1雄蜂+公主皆在→保留phase；否则退回0，
+    --种子会复用现存的"凛冬全5公主"，不重新索要始祖公主
+    if phase >= 1 and phase < 3 and not (fetchTemplateSlot("Forestry:beeDroneGE", templateGenes[1], 1) and fetchTemplateSlot("Forestry:beePrincessGE", templateGenes[1], 1)) then
+        phase = 0
+        beeData.setInitPhase(0)
+    end
+    --模板2(岩石)雄蜂丢失则退回阶段1（仅注册前的中间阶段需要；注册后模板1/2只是普通亲本，缺了不影响培育田野）
+    if phase >= 2 and phase < 3 and not fetchTemplateSlot("Forestry:beeDroneGE", templateGenes[2], 1) then
+        phase = 1
+        beeData.setInitPhase(1)
+    end
+    local princessSlot, drone1Slot, drone2Slot, princess2Slot
+    --阶段1：产出"温湿全5"凛冬（模板1）的纯合雄蜂与公主
+    if phase < 1 then
+        print("正在提纯温度适应性全5、湿度适应性全5基因")
+        local seedSlot = fetchTemplateSlot("Forestry:beePrincessGE", templateGenes[1], 1)
+        if not seedSlot then
+            local seedTag = findWintryTolerantTag()
+            if seedTag then
+                seedSlot = bot.checkItem({name = "Forestry:beePrincessGE", tag = seedTag}, 1)
+            end
+        end
+        if not seedSlot then
+            --首次运行：向用户索要适应性全5的始祖凛冬公主
+            print("请提供一只使用适应性调整器将温度适应性、湿度适应性均调整到全5的始祖种凛冬公主")
+            bot.inventoryLabel = "initialize:getingTorlance5Princess"
+            while true do
+                os.sleep(1)
+                for _, slot in pairs(bot.getItemsWithLabel(bot.inventoryLabel)) do
+                    if bot.inventory[slot].type == "beePrincess" and bot.inventory[slot].isNatural == true and hasGene(bot.inventory[slot], "species", "forestry.speciesWintry") and hasGene(bot.inventory[slot], "temperatureTolerance", "BOTH_5") and hasGene(bot.inventory[slot], "humidityTolerance", "BOTH_5") then
+                        seedSlot = slot
+                        break
+                    else
+                        robot.select(slot)
+                        upgrade_me.sendItems()
+                    end
+                end
+                if seedSlot then
+                    break
+                end
+            end
+            bot.inventoryLabel = previousLabel
+            bot.inventory[seedSlot].inventoryLabel = previousLabel
+        end
+        --开头已检查凛冬蜂存在，此处直接获取其纯合亲本雄蜂
+        local wintryDroneSlot = doUntil(function()
+            return bot.checkItem({name="Forestry:beeDroneGE",tag=beeData.getDroneTag("forestry.speciesWintry")}, 16)
+        end)
+        drone1Slot, princessSlot = M.purify(seedSlot, wintryDroneSlot, templateGenes[1], wintryDroneSlot, ":initializing1")
+        if not drone1Slot then
+            error("初始化失败：阶段1提纯凛冬蜂失败")
+        end
+        if bot.inventory[wintryDroneSlot] and wintryDroneSlot ~= drone1Slot then
+            robot.select(wintryDroneSlot)
+            upgrade_me.sendItems()
+        end
+        beeData.setInitPhase(1)
+        phase = 1
+    end
+    --阶段2：向凛冬公主引入"岩石种"，产出纯合岩石（模板2）雄蜂与岩石公主
+    if phase < 2 then
+        print("正在向石头蜂引入生育4x、温度适应性全5、湿度适应性全5基因")
+        princessSlot = princessSlot or fetchTemplateSlot("Forestry:beePrincessGE", templateGenes[1], 1)
+        drone1Slot = drone1Slot or fetchTemplateSlot("Forestry:beeDroneGE", templateGenes[1], 16)
+        if not princessSlot or not drone1Slot then
+            error("初始化失败：阶段2缺少凛冬模板材料，请重新执行初始化")
+        end
+        --开头已检查岩石蜂存在，此处直接获取其纯合亲本雄蜂
+        local drone2Parent = doUntil(function()
+            return bot.checkItem({name="Forestry:beeDroneGE",tag=beeData.getDroneTag("extrabees.species.rock")}, 1)
+        end)
+        drone2Slot, princessSlot = M.purify(princessSlot, drone2Parent, templateGenes[2], drone1Slot, ":initializing2")
+        if not drone2Slot then
+            error("初始化失败：阶段2提纯岩石蜂失败")
+        end
+        beeData.setInitPhase(2)
+        phase = 2
+    end
+    --阶段3：用自然公主制得"同性状凛冬蜂"（模板3），并注册岩石样板雄蜂+配对公主
+    if phase < 3 then
+        drone2Slot = drone2Slot or fetchTemplateSlot("Forestry:beeDroneGE", templateGenes[2], 16)
+        princessSlot = princessSlot or fetchTemplateSlot("Forestry:beePrincessGE", templateGenes[2], 1)
+        if not drone2Slot or not princessSlot then
+            error("初始化失败：阶段3缺少岩石模板材料，请重新执行初始化")
+        end
+        --若模板3（凛冬石花）雄蜂已存在，说明此前已提纯过C，跳过重复操作（覆盖"已提纯但未及标记阶段"的崩溃窗口）
+        local wintryRockDrone = fetchTemplateSlot("Forestry:beeDroneGE", templateGenes[3], 1)
+        if wintryRockDrone then
+            drone1Slot = wintryRockDrone
+        else
+            drone1Slot = drone1Slot or fetchTemplateSlot("Forestry:beeDroneGE", templateGenes[1], 16)
+            if not drone1Slot then
+                error("初始化失败：阶段3缺少凛冬模板雄蜂，请重新执行初始化")
+            end
+            princess2Slot = bot.checkItem({name = "Forestry:beePrincessGE", tag = beeData.getPrincessTag(true)}, 1)
+            if not princess2Slot then
+                error("初始化失败：ME网络内缺少初始公主蜂")
+            end
+            print("正在向凛冬蜂引入采蜜对象石头、夜行性、耐雨飞行性、穴居性基因")
+            robot.select(drone1Slot--[[@as number]])
+            robot.dropUp(robot.count(drone1Slot--[[@as number]]) - 1)
+            drone1Slot, princess2Slot = M.purify(princess2Slot, drone1Slot, templateGenes[3], drone2Slot, ":initializing3")
+        end
+        --注册岩石样板（speedLevel、assistantDroneTag），配对公主为岩石公主（幂等，可重复执行）
+        beeData.updateAssistantDrone(drone2Slot, true)
+        beeData.updateAssistantPrincess(princessSlot)
+        if princess2Slot then
+            beeData.updateUsingPrincess(princess2Slot)
+        end
+        for _, slot in pairs({drone1Slot, princess2Slot, drone2Slot, princessSlot}) do
+            if slot then
+                robot.select(slot--[[@as number]])
                 upgrade_me.sendItems()
             end
         end
-        if princess1Slot then
-            break
+        drone1Slot, princess2Slot, drone2Slot, princessSlot = nil, nil, nil, nil
+        beeData.setInitPhase(3)
+        phase = 3
+    end
+    --2.培育寻常蜂（若尚不存在）
+    if not beeData.getDroneTag("forestry.speciesCommon") then
+        print("正在培育寻常蜂")
+        local tempDrone, tempPrincess = M.newSpecies("forestry.speciesCommon", {name="寻常",parents={"forestry.speciesWintry","extrabees.species.rock"},baseChance=15.0})
+        if tempDrone then
+            robot.select(tempDrone)
+            upgrade_me.sendItems()
+            robot.select(tempPrincess)
+            upgrade_me.sendItems()
+        else
+            error("初始化失败：培育寻常蜂失败")
+        end
+    end
+    --3.培育田野蜂（最终形态样板；updateAssistantDrone 采纳时将初始化置位）
+    if not beeData.initialized then
+        print("正在培育田野蜂")
+        local tempDrone, tempPrincess = M.newSpecies("forestry.speciesCultivated", {name="田野",parents={"forestry.speciesCommon","extrabees.species.rock"},baseChance=12.0})
+        if tempDrone then
+            robot.select(tempDrone)
+            upgrade_me.sendItems()
+            robot.select(tempPrincess)
+            upgrade_me.sendItems()
+        else
+            error("初始化失败：培育田野蜂失败")
         end
     end
     bot.inventoryLabel = previousLabel
-    bot.inventory[princess1Slot].inventoryLabel = previousLabel
-    --开头已检查凛冬蜂存在，此处直接获取其tag
-    local wintryDroneSlot = doUntil(function()
-        return bot.checkItem({name="Forestry:beeDroneGE",tag=beeData.getDroneTag("forestry.speciesWintry")}, 16)
-    end)
-    print("正在提纯温度适应性全5、湿度适应性全5基因")
-    drone1Slot, princess1Slot = M.purify(princess1Slot, wintryDroneSlot, templateGenes[1], wintryDroneSlot, ":initializing1")
-    if not drone1Slot then
-        error("初始化失败")
-    end
-    if bot.inventory[wintryDroneSlot] and wintryDroneSlot ~= drone1Slot then
-        robot.select(wintryDroneSlot)
-        upgrade_me.sendItems()
-    end
-    --夜行、穴居、耐雨、石头采蜜的石头蜂
-    --开头已检查岩石蜂存在，此处直接获取其tag
-    local drone2Slot = doUntil(function()
-        return bot.checkItem({name="Forestry:beeDroneGE",tag=beeData.getDroneTag("extrabees.species.rock")}, 1)
-    end)
-    print("正在向石头蜂引入生育4x、温度适应性全5、湿度适应性全5基因")
-    drone2Slot, princess1Slot = M.purify(princess1Slot, drone2Slot, templateGenes[2], drone1Slot, ":initializing2")
-    if not drone2Slot then
-        error("初始化失败")
-    end
-    --同性状凛冬蜂
-    local princess2Slot = bot.checkItem({name="Forestry:beePrincessGE",tag=beeData.getPrincessTag(true)}, 1)
-    if not princess2Slot then
-        error("初始化失败：ME网络内缺少初始公主蜂")
-    end
-    print("正在向凛冬蜂引入采蜜对象石头、夜行性、耐雨飞行性、穴居性基因")
-    robot.select(drone1Slot--[[@as number]])
-    robot.dropUp(robot.count(drone1Slot--[[@as number]])-1)
-    drone1Slot, princess2Slot = M.purify(princess2Slot, drone1Slot, templateGenes[3], drone2Slot, ":initializing3")
-    --寻常蜂
-    beeData.updateAssistantDrone(drone2Slot, true)
-    beeData.updateAssistantPrincess(princess1Slot)
-    beeData.updateUsingPrincess(princess2Slot)
-    for _,slot in pairs({drone1Slot, princess1Slot, drone2Slot, princess2Slot}) do
-        robot.select(slot--[[@as number]])
-        upgrade_me.sendItems()
-    end
-    drone1Slot, princess1Slot, drone2Slot, princess2Slot = nil, nil, nil, nil
-    print("正在培育寻常蜂")
-    local tempDrone, tempPrincess = M.newSpecies("forestry.speciesCommon", {name="寻常",parents={"forestry.speciesWintry","extrabees.species.rock"},baseChance=15.0})
-    if tempDrone then
-        robot.select(tempDrone)
-        upgrade_me.sendItems()
-        robot.select(tempPrincess)
-        upgrade_me.sendItems()
-    else
-        error("初始化失败")
-    end
-    --田野蜂（获取早夭）
-    print("正在培育田野蜂")
-    tempDrone, tempPrincess = M.newSpecies("forestry.speciesCultivated", {name="田野",parents={"forestry.speciesCommon","extrabees.species.rock"},baseChance=12.0})
-    if tempDrone then
-        robot.select(tempDrone)
-        upgrade_me.sendItems()
-        robot.select(tempPrincess)
-        upgrade_me.sendItems()
-    else
-        error("初始化失败")
-    end
-    bot.inventoryLabel = previousLabel
-    beeData.initialized = true
+    beeData.completeInitialization()--兜底置位并落盘
 end
 
 return M

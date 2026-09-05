@@ -47,6 +47,7 @@ local function loadData()
     if not data then
         data = {
             initialized = false,
+            initPhase = 0,--初始化仪式阶段：0=未开始 1=模板1(凛冬)完成 2=模板2(岩石)完成 3=岩石样板已注册
             assistantDroneTag = nil,
             assistantPrincessTag = nil,
             speedLevel = nil,
@@ -185,13 +186,74 @@ function M.findTemplateDrone()
     if data.assistantDroneTag and bot.checkItem({name = "Forestry:beeDroneGE", tag = data.assistantDroneTag}) then
         return data.assistantDroneTag
     end
-    local bestTag = scanTemplateDrone()
+    local bestTag, bestSpeed = scanTemplateDrone()
     if bestTag then
         data.assistantDroneTag = bestTag
         data.assistantPrincessTag = nil--样板雄蜂更换，旧公主蜂配对作废，交由getAssistantDrones重新克隆配对
+        if not data.speedLevel or bestSpeed > data.speedLevel then
+            data.speedLevel = bestSpeed--换机/数据丢失恢复时同步回速度基线，避免getTargetGenes的增速下限丢失
+        end
         saveData()
     end
     return bestTag
+end
+
+--初始化达成（幂等）：置位并落盘。物理池已具备完整模板雄蜂时即可安全调用，无需等待培育出田野蜂
+function M.completeInitialization()
+    if M.initialized then
+        return
+    end
+    M.initialized = true
+    saveData()
+end
+
+function M.getInitPhase()
+    return data.initPhase or 0
+end
+
+function M.getAssistantDroneTag()
+    return data.assistantDroneTag
+end
+
+function M.setInitPhase(phase)
+    data.initPhase = phase
+    saveData()
+end
+
+--两个基因结构逐染色体完全一致
+local function isSameGenes(genesA, genesB)
+    for _, chromosome in pairs(chromosomeList) do
+        if genesA[chromosome][1] ~= genesB[chromosome][1] or genesA[chromosome][2] ~= genesB[chromosome][2] then
+            return false
+        end
+    end
+    return true
+end
+
+--优先复用"与样板雄蜂同基因"的现存纯合公主（无论natural与否）作为配对，避免data丢失后依赖始祖公主重新克隆
+--返回tag；找不到则返回nil
+function M.findAssistantPrincessTag(droneStack)
+    if not droneStack then
+        return nil
+    end
+    for slot, stack in pairs(bot.inventory) do
+        if slot ~= 0 and stack and stack.type == "beePrincess" and stack.tag ~= data.assistantPrincessTag and stack.tag ~= data.usingPrincessTag and isSameGenes(stack, droneStack) then
+            return stack.tag
+        end
+    end
+    local stackList = upgrade_me.getItemsInNetwork({name = "Forestry:beePrincessGE"})
+    if not stackList then
+        error("超出ME网络范围")
+    end
+    for _, stack in pairs(stackList) do
+        if stack.name == "Forestry:beePrincessGE" and stack.tag ~= data.assistantPrincessTag and stack.tag ~= data.usingPrincessTag then
+            local ok, genes = pcall(analyzeGenes, stack)
+            if ok and isSameGenes(genes, droneStack) then
+                return stack.tag
+            end
+        end
+    end
+    return nil
 end
 
 function M.updateAssistantPrincess(slot, exchangeTag)
