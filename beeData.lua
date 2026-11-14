@@ -356,11 +356,23 @@ function M.getPrincessTag(isNatural)
     end
     local princess = doUntil(function()
         local princessList = upgrade_me.getItemsInNetwork({name = "Forestry:beePrincessGE"})
+        if not princessList then error("超出ME网络范围") end
+        local unreadable
         for _, p in pairs(princessList) do
-            if p.individual.isNatural == (isNatural == true) and isPrincessAvailable(p.tag) then
-                return p
+            if isPrincessAvailable(p.tag) then
+                local natural = p.individual and p.individual.isNatural
+                if natural == nil then
+                    local ok, genes = pcall(analyzeGenes, p)
+                    if ok then
+                        natural = genes.isNatural
+                    else
+                        unreadable = unreadable or (tostring(p.label or p.name) .. ": " .. tostring(genes))
+                    end
+                end
+                if natural == (isNatural == true) then return p end
             end
         end
+        if unreadable then error("无法确认 ME 中公主蜂的始祖状态: " .. unreadable) end
         for _, item in pairs(bot.inventory) do
             if item and item.name == "Forestry:beePrincessGE" and item.isNatural == (isNatural == true) and isPrincessAvailable(item.tag) then
                 return item
