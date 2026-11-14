@@ -96,9 +96,9 @@ function M.mutate(princessSlot, droneSlot, targetSpecies, mutation)--单步突�
         end
     else
     --2.执行突变(自动突变分支)
-        if mutation.foundation and not bot.checkItem({name = mutation.foundation.name, damage = mutation.foundation.damage}) then
+        if mutation.foundation then
             doUntil(function ()
-                return bot.checkItem({name = mutation.foundation.name, damage = mutation.foundation.damage})
+                return device.hasFoundation(mutation.foundation)
             end, "缺少突变所需的基石："..mutation.foundation.label)
         end
         local function nextGeneration(droneSlot)--追踪公主蜂
@@ -1071,7 +1071,7 @@ function M.checkMutationChain(mutationChain)
         if not isSuitable then
             lackEnvironmentConditions[i] = missingConditions
         end
-        if mutationChain[i][2].foundation and not bot.checkItem({name=mutationChain[i][2].foundation.name,damage=mutationChain[i][2].foundation.damage}) then
+        if mutationChain[i][2].foundation and not device.hasFoundation(mutationChain[i][2].foundation) then
             lackFoundation[i] = mutationChain[i][2].foundation.label
         end
         for _, condition in pairs({"dimension", "date", "lunar_phase", "time"}) do
@@ -1166,7 +1166,7 @@ function M.newBreedingTask(species)--新培育任务：优化已存在品种或�
         else
             print("重新检查中")
             for i, _ in pairs(lackFoundation) do
-                if bot.checkItem({name=mutationChain[i][2].foundation.name,damage=mutationChain[i][2].foundation.damage}) then
+                if device.hasFoundation(mutationChain[i][2].foundation) then
                     lackFoundation[i] = nil
                 end
             end

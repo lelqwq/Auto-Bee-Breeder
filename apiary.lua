@@ -34,6 +34,14 @@ do
 end
 
 local apiaryLocation, apiaryDamage, foundation = 0, 0, nil
+
+function M.hasFoundation(item)
+    if foundation and foundation.name == item.name and foundation.damage == item.damage then
+        return true
+    end
+    return bot.checkItem({name = item.name, damage = item.damage})
+end
+
 local apiaryLocationList = {{1,1},{0,2},{1,3},{2,2}, {2,3},{1,4},{2,5},{3,4}, {4,2},{3,3},{4,4},{5,3}, {3,0},{2,1},{3,2},{4,1}}
 local worldAcceleratorLocationList = {{1,2},{2,4},{4,3},{3,1}}
 
@@ -148,7 +156,7 @@ function M.checkNextGeneration(princessSlot, mutation)
         if mutation.dimension then
             return nil
         end
-        if mutation.foundation and not (foundation and foundation.name == mutation.foundation.name and foundation.damage == mutation.foundation.damage or bot.checkItem({name = mutation.foundation.name, damage = mutation.foundation.damage})) then
+        if mutation.foundation and not M.hasFoundation(mutation.foundation) then
             return nil
         end
         for _, key in pairs({"temperature", "humidity", "biome", "biomeType"}) do

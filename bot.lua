@@ -19,8 +19,7 @@ end
 
 --监听inventory_changed事件，维护物品栏映射表
 M.inventory, M.inventoryLabel = {}, nil
-function M.updateInventory(_, slot)
-    local stack = inventory_controller.getStackInInternalSlot(slot)
+local function cacheStack(slot, stack, label)
     if stack then
         local success, result = pcall(analyzeGenes, stack)
         if success then
@@ -29,10 +28,13 @@ function M.updateInventory(_, slot)
             M.inventory[slot] = stack
             M.inventory[slot].type = "others"
         end
-        M.inventory[slot].inventoryLabel = M.inventoryLabel
+        M.inventory[slot].inventoryLabel = label
     else
         M.inventory[slot] = nil
     end
+end
+function M.updateInventory(_, slot)
+    cacheStack(slot, inventory_controller.getStackInInternalSlot(slot), M.inventoryLabel)
     os.sleep(0)
     return true
 end
@@ -247,155 +249,160 @@ function M.clearItem(inventoryLabel)
         end
     end
 end
+local function matchesItem(stack, filter)
+    return stack and (not filter.name or stack.name == filter.name)
+        and (filter.damage == nil or stack.damage == filter.damage)
+        and (filter.tag == nil or stack.tag == filter.tag)
+        and (not filter.label or stack.label == filter.label)
+end
+
+local function sameItem(a, b)
+    return a and b and a.name == b.name and a.damage == b.damage and a.tag == b.tag
+        and (a.tag ~= nil or not (a.hasTag or b.hasTag))
+end
+
+local function readSlot(slot)
+    return inventory_controller.getStackInInternalSlot(slot)
+end
+
+local function refreshSlot(slot, stack, previous, previousLabel)
+    local label = M.inventoryLabel
+    if sameItem(stack, previous) then
+        label = previousLabel
+    end
+    cacheStack(slot, stack, label)
+end
+
+local function findDatabaseItem(item, stacks)
+    local exact = {name = item.name, damage = item.damage, tag = item.tag, hasTag = item.hasTag}
+    database.clear(1)
+    upgrade_me.store(exact, database.address, 1, 1)
+    if sameItem(database.get(1), item) then return 1 end
+    if not item.tag then return nil end
+
+    -- 兼容不能通过 Lua 过滤表匹配二进制 NBT 的驱动。
+    local count = 0
+    for _, stack in ipairs(stacks) do
+        if stack.name == item.name and stack.damage == item.damage and stack.label == item.label then
+            count = count + 1
+        end
+    end
+    local slots = 0
+    for slot = 1, math.min(count, 81) do
+        local ok = pcall(database.clear, slot)
+        if not ok then break end
+        slots = slot
+    end
+    local byLabel = {name = item.name, damage = item.damage, label = item.label}
+    upgrade_me.store(byLabel, database.address, 1, slots)
+    for slot = 1, slots do
+        if sameItem(database.get(slot), item) then return slot end
+    end
+end
+
+local function checkItem(filter, request)
+    request = type(request) == "number" and request or (request and 1 or 0)
+    if request < 0 or request % 1 ~= 0 then
+        error("取物数量必须是非负整数")
+    end
+
+    local targetSlot, target, emptySlot
+    local matchingSlots = {}
+    for slot = 1, inventorySize do
+        local stack = readSlot(slot)
+        if matchesItem(stack, filter) then
+            if request == 0 then return slot end
+            if stack.size >= request then
+                local cached = M.inventory[slot]
+                refreshSlot(slot, stack, cached, cached and cached.inventoryLabel)
+                return slot
+            end
+            table.insert(matchingSlots, slot)
+            if (stack.maxSize or 64) >= request and (not target or stack.size > target.size) then
+                targetSlot, target = slot, stack
+            end
+        elseif not stack and not emptySlot then
+            emptySlot = slot
+        end
+    end
+
+    if targetSlot then
+        local cached = M.inventory[targetSlot]
+        local label = sameItem(cached, target) and cached.inventoryLabel or nil
+        for _, slot in ipairs(matchingSlots) do
+            if slot ~= targetSlot then
+                local source = readSlot(slot)
+                if sameItem(source, target) then
+                    local sourceCache = M.inventory[slot]
+                    local sourceLabel = sameItem(sourceCache, source) and sourceCache.inventoryLabel or nil
+                    robot.select(slot)
+                    t(targetSlot, request - target.size)
+                    os.sleep(0)
+                    refreshSlot(slot, readSlot(slot), source, sourceLabel)
+                    local received = readSlot(targetSlot)
+                    refreshSlot(targetSlot, received, target, label)
+                    if not sameItem(received, target) then return nil end
+                    target = received
+                    if target.size >= request then return targetSlot end
+                end
+            end
+        end
+    end
+
+    local networkFilter = {name = filter.name, damage = filter.damage, label = filter.label}
+    local stacks = upgrade_me.getItemsInNetwork(networkFilter)
+    if not stacks then error("超出ME网络范围") end
+    local item
+    for _, stack in ipairs(stacks) do
+        if matchesItem(stack, filter) and stack.size > 0 then
+            if request == 0 then return true end
+            if target and sameItem(stack, target) then
+                item = stack
+                break
+            end
+            if (not item or item.size < request and stack.size >= request) and (stack.maxSize or 64) >= request
+                and (not target or emptySlot and stack.size >= request) then
+                item = stack
+            end
+        end
+    end
+    if not item then return nil end
+
+    if not sameItem(item, target) then targetSlot = emptySlot end
+    if not targetSlot then error("物品栏已满") end
+
+    local before = readSlot(targetSlot)
+    if before and not sameItem(before, item) then return nil end
+    local cached = M.inventory[targetSlot]
+    local label = cached and cached.inventoryLabel
+    if not before or before.size < request then
+        local dbSlot = findDatabaseItem(item, stacks)
+        if not dbSlot or robot.select(targetSlot) ~= targetSlot then return nil end
+        before = readSlot(targetSlot)
+        if before and not sameItem(before, item) then return nil end
+        local missing = request - (before and before.size or 0)
+        if missing > 0 then upgrade_me.requestItems(database.address, dbSlot, missing) end
+    end
+    local received = readSlot(targetSlot)
+    refreshSlot(targetSlot, received, cached, label)
+    if sameItem(received, item) and received.size >= request then
+        return targetSlot
+    end
+end
+
 function M.checkItem(filter, request)
     if not filter or not filter.name then
         error("错误的调用bot.checkItem()")
     end
-    --[神秘小补丁
-    if filter.tag then
-        if filter.name == "Forestry:beeDroneGE" or filter.name == "Forestry:beePrincessGE" then
-            local speciesGenes = analyzeGenes({name=filter.name,tag=filter.tag,individual={}}).species
-            database.set(1, filter.name, 0, '{IsAnalyzed:1b,Genome:{Chromosomes:[0:{Slot:0b,UID0:"'..speciesGenes[1]..'",UID1:"'..speciesGenes[2]..'"}]}}')
-            local label = database.get(1).label
-            return M.checkItemByTag({tag=filter.tag,label=label}, request)
-        else
-            error("错误的调用bot.checkItem()：不支持tag查询的物品")
-        end
-    end
-    --]]
-    local function isEqual(stack, _filter)
-        if (_filter.name and stack.name ~= _filter.name) or (_filter.damage and stack.damage ~= _filter.damage) or (_filter.tag and stack.tag ~= _filter.tag) then
-            return false
-        end
-        return true
-    end
-    if request then
-        request = type(request) == "number" and request or 1
-    else
-        request = 0
-    end
-    local slotList, count = {}, 0
-    for slot,item in pairs(M.inventory) do
-        if slot ~= 0 and isEqual(item, filter) then
-            table.insert(slotList, slot)
-            count = count + robot.count(slot)
-        end
-    end
-    local targetSlot
-    for _, slot in pairs(slotList) do
-        if targetSlot then
-            if not isEqual(M.inventory[targetSlot], M.inventory[slot]) then
-                error("错误的调用bot.checkItem()")
-            end
-            M.transfer(slot, targetSlot)
-        else
-            targetSlot = slot
-            request = math.min(request, M.inventory[slot].maxSize or 64)
-        end
-    end
-    if targetSlot and robot.count(targetSlot) >= request then
-        return targetSlot
-    end
-    local stackList = upgrade_me.getItemsInNetwork(filter)
-    if not stackList then
-        error("超出ME网络范围")
-    elseif not stackList[1] then
-        return nil
-    elseif request == 0 then
-        return true
-    end
-    if targetSlot then
-        robot.select(targetSlot)
-    else
-        targetSlot = M.selectEmptySlot()
-        if not targetSlot then
-            error("物品栏已满")
-        end
-        request = math.min(request, stackList[1].maxSize)
-    end
-    database.clear(1)
-    upgrade_me.store(filter, database.address, 1)
-    local stack = database.get(1)
-    if M.inventory[targetSlot] and not isEqual(M.inventory[targetSlot], stack) then
-        error("错误的调用bot.checkItem()")
-    end
-    if stack then
-        upgrade_me.requestItems(database.address, 1, request - count)
-        if M.inventory[targetSlot] then
-            return targetSlot
-        end
-    end
-    return nil
+    return checkItem(filter, request)
 end
+
 function M.checkItemByTag(filter, request)
-    if not filter or not filter.tag or not filter.label then
+    if not filter or not filter.tag or not (filter.label or filter.name) then
         error("错误的调用bot.checkItemByTag()")
     end
-    if request then
-        request = type(request) == "number" and request or 1
-    else
-        request = 0
-    end
-    local slotList, count = {}, 0
-    for slot, item in pairs(M.inventory) do
-        if slot ~= 0 and item.label == filter.label and item.tag == filter.tag then
-            table.insert(slotList, slot)
-            count = count + robot.count(slot)
-        end
-    end
-    local targetSlot
-    for _, slot in pairs(slotList) do
-        if targetSlot then
-            if M.inventory[targetSlot].tag ~= M.inventory[slot].tag then
-                error("错误的调用bot.checkItemByTag()")
-            end
-            M.transfer(slot, targetSlot)
-        else
-            targetSlot = slot
-            request = math.min(request, M.inventory[slot].maxSize or 64)
-        end
-    end
-    if targetSlot and robot.count(targetSlot) >= request then
-        return targetSlot
-    end
-    local i = 1
-    while database.clear(i) do
-        i = i + 1
-    end
-    local stackList = upgrade_me.getItemsInNetwork({label=filter.label})
-    local dbIdx
-    for i = 1, math.min(#stackList, 81) do
-        if stackList[i].tag == filter.tag then
-            dbIdx = i
-            break
-        end
-    end
-    if not dbIdx then
-        return nil
-    elseif request == 0 then
-        return true
-    end
-    if targetSlot then
-        robot.select(targetSlot)
-    else
-        targetSlot = M.selectEmptySlot()
-        if not targetSlot then
-            error("物品栏已满")
-        end
-        request = math.min(request, stackList[dbIdx].maxSize)
-    end
-    upgrade_me.store({label=filter.label}, database.address, 1)
-    local stack = database.get(dbIdx)
-    if stack and stack.tag == filter.tag then
-        upgrade_me.requestItems(database.address, dbIdx, request - count)
-        if M.inventory[targetSlot] then
-            return targetSlot
-        end
-    end
-    return nil
+    return checkItem(filter, request)
 end
-
-
 local crafterArea = {[1]=true,[2]=true,[3]=true,[5]=true,[6]=true,[7]=true,[9]=true,[10]=true,[11]=true}
 function M.clearCrafterArea()
     if M.getEmptySlotCount() < 9 then

@@ -65,6 +65,10 @@ function M.checkMutationEnvironment(mutation)
     return apiary.checkMutationEnvironment(mutation)
 end
 
+function M.hasFoundation(item)
+    return apiary.hasFoundation(item)
+end
+
 function M.destruct()
     apiary.destruct()
     bot.moveYTo(2)
