@@ -227,12 +227,17 @@ function M.nextGeneration(princessSlot, droneSlot, mutation)
     end
     --等待子代并收集输出
     local function collectOutput()
+        local pending = false
         for i=3,9 do
-            if not inventory_controller.suckFromSlot(0, i) then
-                break
+            if inventory_controller.getStackInSlot(0, i) then
+                inventory_controller.suckFromSlot(0, i)
+                os.sleep(0)
+                if inventory_controller.getStackInSlot(0, i) then
+                    pending = true
+                end
             end
-            os.sleep(0)
         end
+        if pending then return false end
         for _,slot in ipairs(bot.getItemsWithLabel("apiary.nextGeneration()")) do
             if bot.inventory[slot] and bot.inventory[slot].type == "beePrincess" then
                 return true
@@ -245,7 +250,6 @@ function M.nextGeneration(princessSlot, droneSlot, mutation)
             return beekeeper.canWork(0) or collectOutput()
         end, "蜜蜂无法生长，请补全缺失的生长条件")
         if collectOutput() then
-            collectOutput()
             break
         end
         os.sleep(1)

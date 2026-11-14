@@ -5,6 +5,7 @@ local apiary = require("apiary")
 --local industrialApiary = require("industrialApiary")
 
 local bot = require("bot")
+local robot = require("robot")
 local mutations = require("mutations")
 local function checkMutation(princessSlot, droneSlot)
     local speciesGeneList = { bot.inventory[princessSlot].species[1], bot.inventory[princessSlot].species[2], bot.inventory[droneSlot].species[1], bot.inventory[droneSlot].species[2] }
@@ -48,9 +49,19 @@ local function chooseMethod(strategy)
 end
 
 function M.nextGeneration(princessSlot, droneSlot, mutation)
-    if not bot.inventory[princessSlot] or bot.inventory[princessSlot].type ~= "beePrincess" or not bot.inventory[droneSlot] or bot.inventory[droneSlot].type ~= "beeDrone" then
-        error(string.format("错误的调用nextGeneration(%d, %d)",princessSlot, droneSlot))
+    local function checkBee(slot, expectedType, role)
+        if type(slot) ~= "number" then
+            error("培育时未选中" .. role)
+        end
+        local bee = bot.inventory[slot]
+        local count = robot.count(slot)
+        if count == 0 or not bee or bee.type ~= expectedType then
+            error(string.format("第 %d 格不能用作培育%s（实际数量 %d，识别为 %s）",
+                slot, role, count, bee and (bee.type .. " / " .. tostring(bee.label or bee.name)) or "未识别"))
+        end
     end
+    checkBee(princessSlot, "beePrincess", "公主蜂")
+    checkBee(droneSlot, "beeDrone", "雄蜂")
     local strategy = mutation or checkMutation(princessSlot, droneSlot)
     --[[策略为false，忽略突变率，使寿命尽可能短
     策略为true，在突变率为0的前提下使寿命尽可能短

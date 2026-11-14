@@ -153,6 +153,7 @@ function M.mutate(princessSlot, droneSlot, targetSpecies, mutation)--单步突�
             if #targetBeeSlots > 0 then
                 break
             end
+            local p1, p2 = table.unpack(bot.inventory[princessSlot].species)
             if p1 == p2 then
                 if p1 == mutation.parents[1] then
                     local droneSlot = allele22[1] or allele12[1]
@@ -680,11 +681,25 @@ function M.purify(princessSlot, droneSlot, targetGenes, assistantDroneSlot, labe
     end
     while robot.count(droneSlot--[[@as number]]) < 16 do
         nextGeneration(droneSlot)
-        for _,slot in pairs(bot.getItemsWithLabel(bot.inventoryLabel)) do
-            if bot.inventory[slot].type == "beeDrone" then
-                droneSlot = slot
-                break
+        droneSlot = nil
+        for _,slot in pairs(getDrones(true, true)) do
+            if bot.inventory[slot] and bot.inventory[slot].type == "beeDrone" and robot.count(slot) > 0 then
+                local matches = true
+                for _, chromosome in ipairs(chromosomeList) do
+                    local alleles = bot.inventory[slot][chromosome]
+                    if alleles[1] ~= targetGenes[chromosome] or alleles[2] ~= targetGenes[chromosome] then
+                        matches = false
+                        break
+                    end
+                end
+                if matches then
+                    droneSlot = slot
+                    break
+                end
             end
+        end
+        if not droneSlot then
+            error("提纯扩繁后未找到符合目标基因的雄蜂，公主蜂在第 " .. princessSlot .. " 格")
         end
     end
     bot.inventoryLabel = previousLabel
