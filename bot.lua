@@ -273,9 +273,15 @@ local function refreshSlot(slot, stack, previous, previousLabel)
     cacheStack(slot, stack, label)
 end
 
-local function findDatabaseItem(item, stacks)
-    local exact = {name = item.name, damage = item.damage, tag = item.tag, hasTag = item.hasTag}
+local function findDatabaseItem(item, stacks, itemFilter)
     database.clear(1)
+    if itemFilter then
+        upgrade_me.store(itemFilter, database.address, 1, 1)
+        if matchesItem(database.get(1), itemFilter) then return 1 end
+        return nil
+    end
+
+    local exact = {name = item.name, damage = item.damage, tag = item.tag, hasTag = item.hasTag}
     upgrade_me.store(exact, database.address, 1, 1)
     if sameItem(database.get(1), item) then return 1 end
     if not item.tag then return nil end
@@ -368,24 +374,36 @@ local function checkItem(filter, request)
     end
     if not item then return nil end
 
-    if not sameItem(item, target) then targetSlot = emptySlot end
+    local useEmptySlot = not sameItem(item, target)
+    if useEmptySlot then targetSlot = emptySlot end
     if not targetSlot then error("物品栏已满") end
 
+    -- 放进空槽且调用方未指定 NBT 时，只按请求的物品类型验收。
+    local itemFilter
+    if useEmptySlot and filter.tag == nil then
+        itemFilter = {name = item.name, damage = item.damage, label = filter.label}
+    end
     local before = readSlot(targetSlot)
-    if before and not sameItem(before, item) then return nil end
+    if before and (useEmptySlot or not sameItem(before, item)) then return nil end
     local cached = M.inventory[targetSlot]
     local label = cached and cached.inventoryLabel
     if not before or before.size < request then
-        local dbSlot = findDatabaseItem(item, stacks)
+        local dbSlot = findDatabaseItem(item, stacks, itemFilter)
         if not dbSlot or robot.select(targetSlot) ~= targetSlot then return nil end
         before = readSlot(targetSlot)
-        if before and not sameItem(before, item) then return nil end
+        if before and (useEmptySlot or not sameItem(before, item)) then return nil end
         local missing = request - (before and before.size or 0)
         if missing > 0 then upgrade_me.requestItems(database.address, dbSlot, missing) end
     end
     local received = readSlot(targetSlot)
     refreshSlot(targetSlot, received, cached, label)
-    if sameItem(received, item) and received.size >= request then
+    local matches
+    if itemFilter then
+        matches = matchesItem(received, itemFilter)
+    else
+        matches = sameItem(received, item) and matchesItem(received, filter)
+    end
+    if matches and received.size >= request then
         return targetSlot
     end
 end
